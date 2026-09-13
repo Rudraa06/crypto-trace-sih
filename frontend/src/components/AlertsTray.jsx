@@ -18,7 +18,12 @@ export default function AlertsTray() {
 
   const fetchAlerts = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/alerts`);
+      const headers = {};
+      const apiKey = import.meta.env.VITE_INTERNAL_API_KEY;
+      if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+      }
+      const res = await fetch(`${API_BASE}/api/alerts`, { headers });
       const data = await res.json();
       if (data.ok && Array.isArray(data.alerts)) {
         setAlerts(data.alerts);
@@ -34,7 +39,7 @@ export default function AlertsTray() {
         }
       }
     } catch (err) {
-      console.error('Failed to fetch alerts', err);
+      if (!import.meta.env.PROD) console.error('Failed to fetch alerts', err);
     }
   };
 

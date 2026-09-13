@@ -35,6 +35,7 @@ export function useTrace() {
     const id = ++reqId.current;
     setLoading(true);
     setError(null);
+    setData(null);
 
     try {
       let result;

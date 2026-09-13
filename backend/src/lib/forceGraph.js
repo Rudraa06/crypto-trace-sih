@@ -301,7 +301,7 @@ export function toForceGraph(traceResult) {
       isExchange: edge.toIsExchange,
       exchange: edge.toExchange,
       riskScore: edge.toRiskScore,
-      contractTag: edge.toContractTag,
+      contractTag: edge.toContractTag ?? (edge.isBridge ? { type: 'bridge', name: edge.bridgeProtocol || 'Bridge' } : null),
       swapEvent: edge.swapEvent,
       onPath: false,
     });
@@ -321,6 +321,8 @@ export function toForceGraph(traceResult) {
       blockNumber: edge.blockNumber ?? null,
       hop: null,
       onPath: false,
+      isBridge: Boolean(edge.isBridge),
+      bridgeProtocol: edge.bridgeProtocol ?? null,
       pathIndices: new Set(),
       _usd: approximateUsd(edge),
     });

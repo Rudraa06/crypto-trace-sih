@@ -13,6 +13,7 @@
 
 import { Router } from 'express';
 import { logger } from '../lib/logger.js';
+import { publishCrossCaseAlert } from './realtime.service.js';
 
 // In-memory store for the hackathon
 const alerts = [];
@@ -55,7 +56,34 @@ export function evaluateTrace(enrichedTrace, caseId = 'UNASSIGNED') {
     reasons.push(`Funds successfully traced to a known exchange endpoint`);
   }
 
-  // If thresholds met, generate alert
+  // Check for shared mule infrastructure across cases
+  if (enrichedTrace.forceGraph && Array.isArray(enrichedTrace.forceGraph.nodes)) {
+    const crossCaseNodes = enrichedTrace.forceGraph.nodes.filter(
+      n => n.crossCaseAlert || (n.crossCaseIds && n.crossCaseIds.length > 1)
+    );
+
+    for (const ccNode of crossCaseNodes) {
+      const casesStr = ccNode.crossCaseIds ? ccNode.crossCaseIds.join(', ') : 'multiple complaints';
+      const label = ccNode.label || ccNode.id.slice(0, 10);
+      const ccAlert = {
+        caseId,
+        walletAddress: ccNode.id,
+        reason: `CRITICAL: Shared Mule Infrastructure Detected! Intermediary wallet ${label} is shared across cases (${casesStr}).`,
+        riskScore: 100,
+        isCrossCase: true,
+        sharedWallet: ccNode.id,
+        sharedCases: ccNode.crossCaseIds,
+        timestamp: new Date().toISOString()
+      };
+      alerts.push(ccAlert);
+      logger.warn('[ALERT ENGINE] Automated CROSS-CASE alert generated!', ccAlert);
+      
+      // Dispatch real-time alert via Redis Pub/Sub
+      publishCrossCaseAlert(ccAlert);
+    }
+  }
+
+  // If thresholds met, generate standard case alert
   if (reasons.length > 0) {
     const alert = {
       caseId,

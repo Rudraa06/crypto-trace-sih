@@ -16,6 +16,7 @@ import { logger } from './lib/logger.js';
 import { destroyProvider } from './services/provider.js';
 import { closeDriver, verifyGraphConnectivity } from './services/neo4j.service.js';
 import { applyGraphSchema } from './services/graphSchema.js';
+import { initializeWebSocket } from './services/realtime.service.js';
 
 // --- Fail fast on bad configuration ---------------------------------------
 try {
@@ -46,12 +47,43 @@ async function initialiseGraph() {
   const connectivity = await verifyGraphConnectivity();
 
   if (!connectivity.ok) {
-    logger.error('Neo4j is NOT available - traces will not be persisted', {
+    logger.error('Neo4j is NOT available - traces will not be persisted. Will keep trying in the background.', {
       uri: config.graph.uri,
       database: config.graph.database,
       reason: connectivity.message,
       fix: connectivity.hint,
     });
+    
+    const intervalId = setInterval(async () => {
+      if (shuttingDown) {
+        clearInterval(intervalId);
+        return;
+      }
+      const retryConnectivity = await verifyGraphConnectivity();
+      if (retryConnectivity.ok) {
+        clearInterval(intervalId);
+        logger.info('Neo4j connected', {
+          uri: config.graph.uri,
+          database: config.graph.database,
+          version: retryConnectivity.version,
+          edition: retryConnectivity.edition,
+        });
+        if (config.graph.autoMigrate) {
+          try {
+            const schema = await applyGraphSchema();
+            logger.info('Graph schema ready', {
+              applied: schema.applied.length,
+              skipped: schema.skipped.length,
+            });
+          } catch (error) {
+            logger.error('Could not apply the graph schema', {
+              message: error?.message,
+              fix: error?.hint ?? 'Check that the Neo4j user may create constraints.',
+            });
+          }
+        }
+      }
+    }, 10000);
     return;
   }
 
@@ -100,6 +132,9 @@ const server = app.listen(config.port, () => {
   // Runs after the socket is bound, so a slow or absent Neo4j never delays the
   // server becoming reachable.
   void initialiseGraph();
+
+  // Attach WebSocket server for real-time alerts
+  initializeWebSocket(server);
 });
 
 // A clear message beats a raw stack trace for the one startup error you will

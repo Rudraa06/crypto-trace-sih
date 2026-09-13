@@ -12,14 +12,14 @@
  * sidebar detail, sidebar click → graph highlight).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import Layout from './components/Layout.jsx';
 import SearchBar from './components/SearchBar.jsx';
-import GraphCanvas from './components/GraphCanvas.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import WarningBanner from './components/WarningBanner.jsx';
 import EmptyState from './components/EmptyState.jsx';
-import StoryTimelineView from './components/StoryTimelineView.jsx';
+const GraphCanvas = lazy(() => import('./components/GraphCanvas.jsx'));
+const StoryTimelineView = lazy(() => import('./components/StoryTimelineView.jsx'));
 import AiCopilotDrawer from './components/AiCopilotDrawer.jsx';
 import ExportReportBtn from './components/ExportReportBtn.jsx';
 import AlertsTray from './components/AlertsTray.jsx';
@@ -28,6 +28,7 @@ import { useTrace } from './hooks/useTrace.js';
 export default function App() {
   const { data, error, loading, trace } = useTrace();
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [requestedDepth, setRequestedDepth] = useState(15);
   const [viewMode, setViewMode] = useState('graph');
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -59,6 +60,7 @@ export default function App() {
   // Handle trace submission
   const handleTrace = useCallback(
     (address, opts) => {
+      setRequestedDepth(opts.maxHops ?? 15);
       trace(address, opts);
       setIsSidebarOpen(true);
     },
@@ -86,19 +88,23 @@ export default function App() {
         <div ref={graphContainerRef} className="absolute inset-0 z-0">
             {hasGraph ? (
               viewMode === 'graph' ? (
-                <GraphCanvas
-                  graphData={data.forceGraph}
-                  selectedNodeId={selectedNodeId}
-                  onNodeSelect={setSelectedNodeId}
-                  width={graphDimensions.width}
-                  height={graphDimensions.height}
-                />
+                <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center"><svg className="w-8 h-8 animate-spin text-[var(--color-accent-from)]" fill="none" viewBox="0 0 24 24"><circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg></div>}>
+                  <GraphCanvas
+                    graphData={data.forceGraph}
+                    selectedNodeId={selectedNodeId}
+                    onNodeSelect={setSelectedNodeId}
+                    width={graphDimensions.width}
+                    height={graphDimensions.height}
+                  />
+                </Suspense>
               ) : (
-                <StoryTimelineView 
-                  traceData={data} 
-                  selectedNodeId={selectedNodeId} 
-                  onNodeSelect={setSelectedNodeId} 
-                />
+                <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center"><svg className="w-8 h-8 animate-spin text-[var(--color-accent-from)]" fill="none" viewBox="0 0 24 24"><circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg></div>}>
+                  <StoryTimelineView 
+                    traceData={data} 
+                    selectedNodeId={selectedNodeId} 
+                    onNodeSelect={setSelectedNodeId} 
+                  />
+                </Suspense>
               )
             ) : !loading && !data ? (
               /* Landing state */
@@ -143,8 +149,9 @@ export default function App() {
                   <p className="text-sm text-[var(--color-text-secondary)]">
                     Tracing fund flows…
                   </p>
-                  <p className="text-xs text-[var(--color-text-muted)] mt-1">
-                    This may take a moment if on-chain ingestion is needed
+                  <CountdownTimer initialSeconds={Math.floor((15000 + Math.pow(requestedDepth, 1.5) * 5000) / 1000)} depth={requestedDepth} />
+                  <p className="text-[10px] text-[var(--color-text-muted)] mt-1 max-w-[250px] mx-auto leading-tight">
+                    The trace will automatically return a partial graph if it takes longer than the estimated time.
                   </p>
                 </div>
               </div>
@@ -246,5 +253,23 @@ export default function App() {
       />
       <AlertsTray />
     </Layout>
+  );
+}
+
+function CountdownTimer({ initialSeconds, depth }) {
+  const [timeLeft, setTimeLeft] = useState(initialSeconds);
+
+  useEffect(() => {
+    if (timeLeft <= 0) return;
+    const interval = setInterval(() => {
+      setTimeLeft(prev => prev - 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [timeLeft]);
+
+  return (
+    <p className="text-xs font-mono text-[var(--color-text-accent)] mt-2">
+      Estimated time left: {timeLeft}s (Depth: {depth} hops)
+    </p>
   );
 }

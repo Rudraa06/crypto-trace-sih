@@ -1,11 +1,17 @@
+import fastapi
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
 from neo4j import GraphDatabase
 import networkx as nx
 from models.gnn_detector import predict_otc_risk
 import os
 
 app = FastAPI(title="CryptoTrace ML Microservice", version="1.0.0")
+
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 
 # Use environment variables or fallback to standard neo4j local auth
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -14,9 +20,11 @@ NEO4J_PASS = os.getenv("NEO4J_PASSWORD")
 
 if not NEO4J_PASS:
     raise RuntimeError("NEO4J_PASSWORD environment variable is required.")
+if not INTERNAL_API_KEY:
+    print("Warning: INTERNAL_API_KEY not set. API calls will be rejected.")
 
 class PredictionRequest(BaseModel):
-    address: str
+    address: str = Field(..., pattern=r"^0x[a-fA-F0-9]{40}$", description="Ethereum wallet address")
 
 def fetch_ego_graph(address: str) -> nx.DiGraph:
     """
@@ -52,11 +60,14 @@ def fetch_ego_graph(address: str) -> nx.DiGraph:
     return G
 
 @app.post("/predict/otc-risk")
-async def predict_otc(req: PredictionRequest):
+async def predict_otc(req: PredictionRequest, api_key: str = fastapi.Depends(api_key_header)):
     """
     Endpoint to predict if a given wallet address belongs to an OTC broker.
     Extracts the local graph topology from Neo4j and runs it through the GNN model.
     """
+    if INTERNAL_API_KEY and api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
     if not req.address:
         raise HTTPException(status_code=400, detail="Address is required")
 

@@ -24,9 +24,13 @@ export default function AiCopilotDrawer({ isOpen, onClose, traceData }) {
     setLoading(true);
 
     try {
+      const apiKey = import.meta.env.VITE_INTERNAL_API_KEY;
+      const headers = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['X-API-Key'] = apiKey;
+
       const res = await fetch(`${API_BASE}/api/ai/copilot-chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           traceContext: traceData,
           query: text,

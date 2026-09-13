@@ -47,6 +47,7 @@ async function request(path, opts = {}) {
 
     const response = await fetch(url, {
       signal: controller.signal,
+      cache: 'no-store',
       ...opts,
       headers,
     });
@@ -96,7 +97,20 @@ export async function traceAddress(address, options = {}) {
   const query = params.toString();
   const path = `/api/trace/${encodeURIComponent(address)}${query ? `?${query}` : ''}`;
 
-  return request(path, { timeoutMs: 300_000 });
+  let response = await request(path, { timeoutMs: 300_000 });
+
+  if (response.status === 'processing' && response.jobId) {
+    while (true) {
+      await new Promise(r => setTimeout(r, 3000));
+      const pollResponse = await request(`/api/trace/status/${response.jobId}`, { timeoutMs: 10_000 });
+      if (pollResponse.status !== 'processing') {
+        // The backend returns the raw trace payload when it completes
+        return pollResponse;
+      }
+    }
+  }
+
+  return response;
 }
 
 /**
@@ -110,12 +124,24 @@ export async function traceAddress(address, options = {}) {
  * @param {number} [payload.maxHops]
  */
 export async function ingestComplaint(payload) {
-  return request('/api/complaints/ingest', {
+  let response = await request('/api/complaints/ingest', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     timeoutMs: 300_000
   });
+
+  if (response.status === 'processing' && response.jobId) {
+    while (true) {
+      await new Promise(r => setTimeout(r, 3000));
+      const pollResponse = await request(`/api/complaints/status/${response.jobId}`, { timeoutMs: 10_000 });
+      if (pollResponse.status !== 'processing') {
+        return pollResponse;
+      }
+    }
+  }
+
+  return response;
 }
 
 /**

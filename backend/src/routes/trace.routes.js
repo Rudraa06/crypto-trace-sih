@@ -74,6 +74,7 @@ redis.on('error', (err) => {
 const TRACE_CACHE_TTL = 900; // 15 minutes
 
 export const traceRouter = Router();
+export const traceJobs = new Map();
 
 /**
  * Ceiling for the on-chain fallback fetch. Lower than `/api/history`'s 90s: the
@@ -138,12 +139,11 @@ function parseMaxHops(raw) {
  * answer plus an explanation of why the fallback did not help is more useful
  * than a 500.
  *
- * @param {string} address
- * @param {number} depth
- */
 async function ingestFromChain(address, depth) {
+  // Dynamic timeout based on requested depth to prevent exponential fan-out crashes
+  const timeoutMs = Math.floor(15000 + Math.pow(depth, 1.5) * 5000);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FALLBACK_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const history = await fetchWalletHistory(address, depth, { signal: controller.signal });
@@ -272,104 +272,139 @@ traceRouter.get(
     const cachedData = await redis.get(cacheKey).catch(() => null);
 
     if (cachedData) {
-      logger.info('Served trace result from Redis cache', { address: addressDisplay });
-      const parsedData = JSON.parse(cachedData);
-      // We must append a header or similar to indicate cache hit, but adding it to the JSON body is safer.
-      parsedData.cached = true;
-      res.json(parsedData);
-      return;
+      try {
+        const parsedData = JSON.parse(cachedData);
+        parsedData.cached = true;
+        logger.info('Served trace result from Redis cache', { address: addressDisplay });
+        return res.json(parsedData);
+      } catch (err) {
+        logger.warn('Failed to parse cached trace result, falling back to fresh query', { address: addressDisplay, error: err.message });
+      }
     }
-
-    // --- Query, then ingest-and-retry once on a miss -------------------------
 
     const options = { maxHops, includeContext, contextLimit: MAX_CONTEXT_EDGES };
+    const jobId = `job:trace:${address}:${Date.now()}`;
+    
+    traceJobs.set(jobId, { status: 'processing', address });
+    await redis.setex(jobId, 600, JSON.stringify({ status: 'processing', address })).catch(() => null);
 
-    let result = await findCashOutPaths(address, options);
-    let ingestion = null;
+    // Return 202 Accepted immediately so HTTP request never times out
+    res.status(202).json({ ok: true, status: 'processing', jobId });
 
-    if (!result.found && result.reason === 'WALLET_NOT_IN_GRAPH' && allowIngest) {
-      logger.info('Wallet absent from the graph; falling back to an on-chain trace', {
-        address: addressDisplay,
-        depth,
-      });
+    // Execute trace query and potential on-chain fallback in background
+    (async () => {
+      try {
+        let result = await findCashOutPaths(address, options);
+        let ingestion = null;
 
-      ingestion = await ingestFromChain(address, depth);
+        if (!result.found && allowIngest) {
+          logger.info('No exchange reached in current graph; starting background on-chain trace', {
+            address: addressDisplay,
+            depth,
+          });
+          ingestion = await ingestFromChain(address, depth);
+          if (ingestion.ok && ingestion.wroteAnything) {
+            result = await findCashOutPaths(address, options);
+          }
+        }
 
-      // Re-query only if something was actually written. Re-running the same
-      // query against an unchanged graph would just spend a round trip to
-      // produce the identical answer.
-      if (ingestion.ok && ingestion.wroteAnything) {
-        result = await findCashOutPaths(address, options);
-      }
-    }
-
-    // --- Assemble ------------------------------------------------------------
-
-    const warnings = [...(result.warnings ?? [])];
-
-    if (depthWasClamped) {
-      warnings.push(
-        `The requested depth was above the configured maximum and was clamped to ${depth}.`
-      );
-    }
-
-    if (ingestion?.attempted && !ingestion.ok) {
-      warnings.push(
-        'This wallet was not in the graph, and the on-chain fallback that would have added it ' +
-          `failed: ${ingestion.error} The result below reflects only what was already ingested.`
-      );
-    }
-
-    if (ingestion?.ok && !ingestion.wroteAnything) {
-      warnings.push(
-        'This wallet was not in the graph, and an on-chain trace found no transfers in the ' +
-          'tracked asset set (native coin and stablecoins). An address that has only ever ' +
-          'moved other tokens will look empty here.'
-      );
-    }
-
-    // ── Phase 4: risk engine + AI narrative ─────────────────────────────────
-    // Risk enrichment runs synchronously because the forceGraph depends on it.
-    // AI brief generation is async but fails open: a Gemini timeout does not
-    // degrade the graph response.
-
-    const finalForceGraph = includeForceGraph ? enrichTraceGraph(toForceGraph(result)) : null;
-
-    // Only request an AI brief when there is something to brief about.
-    let aiNarrative = null;
-    if (result.found && finalForceGraph) {
-      const tracePayload = {
-        query: { address, addressDisplay },
-        paths: result.paths,
-        shortestHops: result.shortestHops,
-        topExchange: result.topExchange,
-        forceGraph: finalForceGraph,
-      };
-
-      const narrativeResult = await generateCaseBrief(tracePayload);
-      aiNarrative = narrativeResult;
-
-      if (!narrativeResult.ok && !narrativeResult.skipped) {
-        warnings.push(
-          'AI case brief generation failed; the graph result is complete and unaffected.'
+        const finalResponse = await assembleTraceResponse(
+          result, options, ingestion, depthWasClamped, depth, address, addressDisplay, includeForceGraph
         );
+
+        traceJobs.set(jobId, { status: 'done', response: finalResponse });
+        await redis.setex(jobId, 600, JSON.stringify({ status: 'done', response: finalResponse })).catch(() => null);
+        await redis.setex(cacheKey, TRACE_CACHE_TTL, JSON.stringify(finalResponse)).catch(() => null);
+      } catch (error) {
+        logger.error('Background trace processing failed', { address, error: error.message });
+        traceJobs.set(jobId, { status: 'error', error: error.message });
+        await redis.setex(jobId, 600, JSON.stringify({ status: 'error', error: error.message })).catch(() => null);
       }
-    }
-
-    const finalResponse = {
-      ok: true,
-      ...result,
-      ...(finalForceGraph ? { forceGraph: finalForceGraph } : {}),
-      ...(aiNarrative ? { aiNarrative } : {}),
-      ...(ingestion ? { ingestion } : {}),
-      warnings,
-    };
-
-    // Cache the fully enriched response
-    await redis.setex(cacheKey, TRACE_CACHE_TTL, JSON.stringify(finalResponse)).catch(err => {
-      logger.warn('Failed to cache trace result', { error: err.message });
-    });
-
-    res.json(finalResponse);
+    })();
   })
 );
+
+async function assembleTraceResponse(result, options, ingestion, depthWasClamped, depth, address, addressDisplay, includeForceGraph) {
+  const warnings = [...(result.warnings ?? [])];
+
+  if (depthWasClamped) {
+    warnings.push(`The requested depth was above the configured maximum and was clamped to ${depth}.`);
+  }
+
+  if (ingestion?.attempted && !ingestion.ok) {
+    warnings.push('This wallet was not in the graph, and the on-chain fallback that would have added it ' +
+      `failed: ${ingestion.error} The result below reflects only what was already ingested.`);
+  }
+
+  if (ingestion?.ok && !ingestion.wroteAnything) {
+    warnings.push('This wallet was not in the graph, and an on-chain trace found no transfers in the ' +
+      'tracked asset set (native coin and stablecoins). An address that has only ever ' +
+      'moved other tokens will look empty here.');
+  }
+
+  let finalForceGraph = includeForceGraph ? await enrichTraceGraph(toForceGraph(result)) : null;
+
+  if (finalForceGraph && finalForceGraph.nodes.length > 500) {
+    warnings.push(`Graph contained ${finalForceGraph.nodes.length} nodes. Pruned non-essential context nodes to improve performance.`);
+    const essentialNodes = new Set();
+    finalForceGraph.nodes = finalForceGraph.nodes.filter(n => {
+      if (n.onPath || n.isExchange) {
+        essentialNodes.add(n.id);
+        return true;
+      }
+      return false;
+    });
+    finalForceGraph.links = finalForceGraph.links.filter(l => 
+      essentialNodes.has(typeof l.source === 'object' ? l.source.id : l.source) && 
+      essentialNodes.has(typeof l.target === 'object' ? l.target.id : l.target)
+    );
+  }
+
+  let aiNarrative = null;
+  if (result.found && finalForceGraph) {
+    const tracePayload = {
+      query: { address, addressDisplay },
+      paths: result.paths,
+      shortestHops: result.shortestHops,
+      topExchange: result.topExchange,
+      forceGraph: finalForceGraph,
+    };
+
+    const narrativeResult = await generateCaseBrief(tracePayload);
+    aiNarrative = narrativeResult;
+
+    if (!narrativeResult.ok && !narrativeResult.skipped) {
+      warnings.push('AI case brief generation failed; the graph result is complete and unaffected.');
+    }
+  }
+
+  return {
+    ok: true,
+    ...result,
+    ...(finalForceGraph ? { forceGraph: finalForceGraph } : {}),
+    ...(aiNarrative ? { aiNarrative } : {}),
+    ...(ingestion ? { ingestion } : {}),
+    warnings,
+  };
+}
+
+traceRouter.get(['/status/:jobId', '/trace/status/:jobId'], asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  const { jobId } = req.params;
+  let parsed = null;
+
+  const data = await redis.get(jobId).catch(() => null);
+  if (data) {
+    try { parsed = JSON.parse(data); } catch (_) {}
+  }
+
+  if (!parsed) {
+    parsed = traceJobs.get(jobId);
+  }
+
+  if (!parsed) return res.status(404).json({ ok: false, error: 'Job not found or expired' });
+
+  if (parsed.status === 'processing') return res.status(202).json(parsed);
+  if (parsed.status === 'error') return res.status(500).json(parsed);
+  return res.json(parsed.response || parsed);
+}));

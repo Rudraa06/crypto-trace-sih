@@ -13,6 +13,7 @@ import { runInTransaction } from './neo4j.service.js';
 import { logger } from '../lib/logger.js';
 import { config } from '../config/env.js';
 import { createLimiter } from '../lib/concurrency.js';
+import { normalizeAddress, toChecksum } from '../lib/addresses.js';
 
 // Fetch is natively available in Node > 18
 const crossChainLimiter = createLimiter(config.rpcConcurrency);
@@ -34,6 +35,8 @@ redis.on('error', (err) => {
 // 3600 seconds = 1 hour maximum bridge reconciliation window
 const BRIDGE_CACHE_TTL = 3600; 
 
+const inMemoryBridgeCache = new Map();
+
 /**
  * 1. Cache a pending bridge deposit detected on Chain A.
  * 
@@ -44,21 +47,23 @@ const BRIDGE_CACHE_TTL = 3600;
  * @param {number} usdValue - The calculated USD value at time of deposit
  */
 export async function cachePendingBridgeDeposit(sourceChain, sourceTxHash, walletAddress, bridgeProtocol, usdValue) {
-  try {
-    const key = `bridge:pending:${bridgeProtocol}:${sourceTxHash}`;
-    const payload = JSON.stringify({
-      sourceChain,
-      walletAddress,
-      usdValue,
-      timestamp: Math.floor(Date.now() / 1000)
-    });
+  const normAddress = normalizeAddress(walletAddress);
+  const key = `bridge:pending:${bridgeProtocol}:${sourceTxHash}`;
+  const payload = {
+    sourceChain,
+    walletAddress: normAddress,
+    usdValue,
+    timestamp: Math.floor(Date.now() / 1000)
+  };
 
-    // Cache with TTL to prevent memory leaks and bound our temporal heuristic
-    await redis.setex(key, BRIDGE_CACHE_TTL, payload);
-    logger.info(`[CrossChain] Cached pending deposit: ${walletAddress} on ${bridgeProtocol} for $${usdValue}`);
+  inMemoryBridgeCache.set(key, payload);
+
+  try {
+    await redis.setex(key, BRIDGE_CACHE_TTL, JSON.stringify(payload));
   } catch (error) {
-    logger.error(`[CrossChain] Redis cache error: ${error.message}`);
+    logger.debug(`[CrossChain] Redis cache fallback used: ${error.message}`);
   }
+  logger.info(`[CrossChain] Cached pending deposit: ${normAddress} on ${bridgeProtocol} for $${usdValue}`);
 }
 
 /**
@@ -73,33 +78,48 @@ export async function cachePendingBridgeDeposit(sourceChain, sourceTxHash, walle
  */
 export async function reconcileCrossChainWithdrawal(targetChain, targetTxHash, recipientAddress, bridgeProtocol, targetUsdValue) {
   try {
-    // Scan pending deposits for this protocol
-    const keys = await redis.keys(`bridge:pending:${bridgeProtocol}:*`);
+    const normRecipient = normalizeAddress(recipientAddress);
     const now = Math.floor(Date.now() / 1000);
+    const entries = [];
 
-    for (const key of keys) {
-      const dataStr = await redis.get(key);
-      if (!dataStr) continue;
+    // 1. Try Redis first
+    try {
+      const keys = await redis.keys(`bridge:pending:${bridgeProtocol}:*`);
+      for (const key of keys) {
+        const dataStr = await redis.get(key);
+        if (dataStr) {
+          entries.push({ key, deposit: JSON.parse(dataStr) });
+        }
+      }
+    } catch (_) {}
 
-      const deposit = JSON.parse(dataStr);
-      
-      // Temporal Heuristic: Must be > 0 and <= 3600s
+    // 2. Fall back to in-memory map
+    if (entries.length === 0) {
+      for (const [key, deposit] of inMemoryBridgeCache.entries()) {
+        if (key.startsWith(`bridge:pending:${bridgeProtocol}:`)) {
+          entries.push({ key, deposit });
+        }
+      }
+    }
+
+    for (const { key, deposit } of entries) {
+      // Temporal Heuristic: Must be >= 0 and <= 3600s
       const timeDelta = now - deposit.timestamp;
-      if (timeDelta <= 0 || timeDelta > BRIDGE_CACHE_TTL) continue;
+      if (timeDelta < 0 || timeDelta > BRIDGE_CACHE_TTL) continue;
 
       // Value Heuristic: 0.98 <= (V_B / V_A) <= 1.00
       // Accounting for up to 2% bridge fee slippage
       const valueRatio = targetUsdValue / deposit.usdValue;
       if (valueRatio >= 0.98 && valueRatio <= 1.00) {
-        
-        logger.warn(`[CrossChain] Match Found! ${deposit.walletAddress} bridged to ${recipientAddress}`);
+        logger.info(`[CrossChain] Match Found! ${deposit.walletAddress} bridged to ${normRecipient}`);
         
         // Match found! Write to Neo4j
         const confidence = 1 - Math.abs(1 - valueRatio);
-        await linkBridgedWallets(deposit.walletAddress, recipientAddress, bridgeProtocol, timeDelta, confidence, deposit.usdValue, targetUsdValue);
+        await linkBridgedWallets(deposit.walletAddress, normRecipient, bridgeProtocol, timeDelta, confidence, deposit.usdValue, targetUsdValue);
         
-        // Remove from cache so it doesn't double-match
-        await redis.del(key);
+        // Remove from caches so it doesn't double-match
+        inMemoryBridgeCache.delete(key);
+        await redis.del(key).catch(() => null);
         return true;
       }
     }
@@ -114,9 +134,14 @@ export async function reconcileCrossChainWithdrawal(targetChain, targetTxHash, r
  * 3. Write the multi-chain [BRIDGED_TO] relationship to Neo4j
  */
 async function linkBridgedWallets(sourceWallet, targetWallet, bridge, timeDelta, confidence, usdIn, usdOut) {
+  const normSource = normalizeAddress(sourceWallet);
+  const normTarget = normalizeAddress(targetWallet);
+
   const query = `
-    MERGE (a:Wallet {address: $sourceWallet})
-    MERGE (b:Wallet {address: $targetWallet})
+    MERGE (a:Wallet {address: $normSource})
+    ON CREATE SET a.addressDisplay = $displaySource
+    MERGE (b:Wallet {address: $normTarget})
+    ON CREATE SET b.addressDisplay = $displayTarget
     MERGE (a)-[r:BRIDGED_TO {
       bridge: $bridge,
       timeDelta: $timeDelta
@@ -130,8 +155,10 @@ async function linkBridgedWallets(sourceWallet, targetWallet, bridge, timeDelta,
 
   await runInTransaction('WRITE', async (tx) => {
     await tx.run(query, {
-      sourceWallet,
-      targetWallet,
+      normSource,
+      displaySource: toChecksum(normSource),
+      normTarget,
+      displayTarget: toChecksum(normTarget),
       bridge,
       timeDelta,
       confidence,
@@ -139,6 +166,13 @@ async function linkBridgedWallets(sourceWallet, targetWallet, bridge, timeDelta,
       usdOut
     });
   });
+
+  try {
+    const keys = await redis.keys(`trace:result:${normSource}:*`);
+    for (const key of keys) {
+      await redis.del(key);
+    }
+  } catch (_) {}
 }
 
 /**

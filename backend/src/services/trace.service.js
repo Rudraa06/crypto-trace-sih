@@ -95,10 +95,8 @@ export function buildShortestPathCypher(maxHops) {
 
   return `
 MATCH (start:Wallet { address: $address })
-MATCH (exchange:Wallet)
-WHERE exchange.isExchange = true AND exchange.address <> $address
-MATCH path = shortestPath((start)-[:TRANSACTION*1..${bound}]->(exchange))
-WHERE none(n IN nodes(path)[1..-1] WHERE coalesce(n.isExchange, false) = true)
+MATCH path = shortestPath((start)-[:TRANSACTION*1..${bound}]->(exchange:Wallet { isExchange: true }))
+WHERE exchange.address <> $address
 RETURN path              AS path,
        exchange.address        AS exchangeAddress,
        exchange.addressDisplay AS exchangeDisplay,
@@ -106,6 +104,7 @@ RETURN path              AS path,
        exchange.exchangeLabel  AS exchangeLabel,
        length(path)            AS hops
 ORDER BY hops ASC, exchangeName ASC
+LIMIT 20
 `.trim();
 }
 
@@ -535,6 +534,60 @@ export async function findCashOutPaths(rawAddress, options = {}) {
         }
       }
     }
+
+    // Query BRIDGED_TO relationships created by cross-chain reconciliation engine in Neo4j
+    const bridgedEdgesResult = await tx.run(
+      `
+      UNWIND $addresses AS addr
+      MATCH (w:Wallet) WHERE toLower(w.address) = toLower(addr)
+      MATCH (w)-[r:BRIDGED_TO]->(b:Wallet)
+      RETURN w.address          AS fromAddress,
+             w.addressDisplay   AS fromDisplay,
+             b.address          AS toAddress,
+             b.addressDisplay   AS toDisplay,
+             r.bridge           AS bridgeProtocol,
+             r.confidence       AS confidence,
+             r.usdIn            AS usdIn,
+             r.usdOut           AS usdOut,
+             r.timeDelta        AS timeDelta
+      `.trim(),
+      { addresses: [...onPath] }
+    );
+
+    for (const rec of bridgedEdgesResult.records) {
+      const fromAddr = rec.get('fromAddress');
+      const toAddr = rec.get('toAddress');
+      const bridge = rec.get('bridgeProtocol');
+
+      crossChainMap.set(`bridge:${fromAddr}:${toAddr}`, {
+        chain: bridge || 'cross-chain',
+        address: toAddr,
+        viaBridge: bridge,
+        fromAddress: fromAddr,
+        confidence: rec.get('confidence'),
+        usdIn: rec.get('usdIn'),
+        usdOut: rec.get('usdOut'),
+      });
+
+      contextEdges.push({
+        from: fromAddr,
+        fromDisplay: rec.get('fromDisplay') ?? toChecksum(fromAddr),
+        to: toAddr,
+        toDisplay: rec.get('toDisplay') ?? toChecksum(toAddr),
+        toIsExchange: false,
+        toExchange: null,
+        uniqueId: `bridge:${fromAddr}:${toAddr}`,
+        hash: `bridge-${fromAddr.slice(0, 8)}-${toAddr.slice(0, 8)}`,
+        amount: Number(rec.get('usdIn') || 0),
+        asset: 'BRIDGED',
+        assetClass: 'bridge',
+        blockNumber: null,
+        timestamp: null,
+        isBridge: true,
+        bridgeProtocol: bridge,
+      });
+    }
+
     const crossChain = [...crossChainMap.values()];
 
     logger.info('Cash-out paths resolved', {

@@ -71,8 +71,10 @@ export default function GraphCanvas({
 
       let color = node.color ?? ROLE_COLORS[node.role] ?? '#94a3b8';
 
-      // Override colors for Phase 1 tagged contracts
-      if (node.contractTag) {
+      // Override colors for Phase 1 tagged contracts & cross-case alerts
+      if (node.crossCaseAlert) {
+        color = '#E11D48'; // Crimson red for shared mule infrastructure
+      } else if (node.contractTag) {
         if (node.contractTag.type === 'dex') color = '#8B5CF6';
         else if (node.contractTag.type === 'bridge') color = '#EA580C';
         else if (node.contractTag.type === 'mixer') color = '#E11D48';
@@ -84,7 +86,7 @@ export default function GraphCanvas({
       const isSource = node.role === NODE_ROLES.SOURCE;
       
       let alpha = 1;
-      if (isTraceActive && !isOnPath && !isSource) {
+      if (isTraceActive && !isOnPath && !isSource && !node.crossCaseAlert) {
         alpha = 0.2; // Dim non-critical nodes
       }
 
@@ -100,6 +102,27 @@ export default function GraphCanvas({
         ctx.fill();
       }
 
+      // Pulsing Crimson Glow Ring & Dashed Alert Halo for Cross-Case Nodes
+      if (node.crossCaseAlert) {
+        const t = (Date.now() % 1500) / 1500;
+        const pulseScale = 1 + 0.35 * Math.sin(t * Math.PI * 2);
+        const pulseAlpha = (0.2 + 0.2 * Math.sin(t * Math.PI * 2)) * alpha;
+
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, radius * pulseScale * 2.2, 0, 2 * Math.PI);
+        ctx.fillStyle = `rgba(225, 29, 72, ${pulseAlpha})`; // Crimson glow
+        ctx.fill();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, radius + 5 / globalScale, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#E11D48';
+        ctx.lineWidth = 2.5 / globalScale;
+        ctx.setLineDash([4 / globalScale, 3 / globalScale]);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // Selection / hover ring
       if (isSelected || isHovered) {
         ctx.beginPath();
@@ -109,23 +132,11 @@ export default function GraphCanvas({
         ctx.stroke();
       }
 
-      // Cross-Case Alert Halo (Dashed red ring)
-      if (node.crossCaseAlert) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, radius + 6 / globalScale, 0, 2 * Math.PI);
-        ctx.strokeStyle = '#ef4444'; // Red alert color
-        ctx.lineWidth = 2 / globalScale;
-        ctx.setLineDash([4 / globalScale, 4 / globalScale]);
-        ctx.stroke();
-        ctx.restore();
-      }
-
       // Main circle
       ctx.beginPath();
       ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
       
-      if (isContext) {
+      if (isContext && !node.crossCaseAlert) {
         ctx.fillStyle = `rgba(51, 56, 69, ${alpha * 0.5})`;
       } else {
         // Hex to RGBA parsing helper to respect node opacity
@@ -137,15 +148,28 @@ export default function GraphCanvas({
       ctx.fill();
 
       // Label (only when zoomed in enough)
-      if (globalScale > 0.8 && node.label) {
-        const fontSize = Math.max(10 / globalScale, 3);
-        ctx.font = `600 ${fontSize}px var(--font-mono)`; // Workstation Monospace Font
+      if (globalScale > 0.7 && (node.label || node.crossCaseAlert)) {
+        const fontSize = Math.max(10 / globalScale, 3.5);
+        ctx.font = `600 ${fontSize}px var(--font-mono)`; // Monospace Font
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = isContext
-          ? `rgba(100, 116, 139, ${alpha * 0.5})`
-          : `rgba(248, 250, 252, ${alpha * 0.85})`;
-        ctx.fillText(node.label, node.x, node.y + radius + 2 / globalScale);
+
+        const labelText = node.crossCaseAlert 
+          ? `⚠️ ${node.label ?? shortenAddress(node.addressDisplay ?? node.id)}`
+          : (node.label ?? shortenAddress(node.addressDisplay ?? node.id));
+
+        // Text shadow for high contrast legibility
+        ctx.save();
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+        ctx.shadowBlur = 4 / globalScale;
+        ctx.fillStyle = node.crossCaseAlert
+          ? '#FCA5A5' // Soft red tint for cross-case labels
+          : isContext
+          ? `rgba(148, 163, 184, ${alpha * 0.75})`
+          : `rgba(248, 250, 252, ${alpha * 0.9})`;
+
+        ctx.fillText(labelText, node.x, node.y + radius + 3 / globalScale);
+        ctx.restore();
       }
 
       // Draw mixer warning border instead of cartoonish emoji
@@ -183,11 +207,20 @@ export default function GraphCanvas({
       ctx.beginPath();
       ctx.moveTo(source.x, source.y);
       ctx.lineTo(target.x, target.y);
-      ctx.strokeStyle = isOnPath
-        ? `rgba(245, 158, 11, ${alpha})` // Amber path links
-        : `rgba(100, 116, 139, ${alpha})`; // Cool Slate fallback
-      ctx.lineWidth = width;
+      
+      if (link.isBridge) {
+        ctx.strokeStyle = `rgba(234, 88, 12, 0.95)`; // Bright orange for bridge links
+        ctx.setLineDash([6 / globalScale, 4 / globalScale]); // Dashed line for bridge link
+        ctx.lineWidth = Math.max(2.5 / globalScale, 1.5);
+      } else {
+        ctx.strokeStyle = isOnPath
+          ? `rgba(245, 158, 11, ${alpha})` // Amber path links
+          : `rgba(100, 116, 139, ${alpha})`; // Cool Slate fallback
+        ctx.setLineDash([]);
+        ctx.lineWidth = width;
+      }
       ctx.stroke();
+      ctx.setLineDash([]); // Reset line dash for arrow head and other drawings
 
       // Arrow head
       if (link.directed !== false) {
@@ -218,7 +251,9 @@ export default function GraphCanvas({
           arrowY - ny * arrowLen + nx * arrowWidth
         );
         ctx.closePath();
-        ctx.fillStyle = isOnPath
+        ctx.fillStyle = link.isBridge
+          ? `rgba(234, 88, 12, 0.95)`
+          : isOnPath
           ? `rgba(245, 158, 11, ${alpha + 0.15})`
           : `rgba(100, 116, 139, ${alpha + 0.1})`;
         ctx.fill();

@@ -56,6 +56,8 @@
  *   MIXER_INTERACTION       fixed-denomination transfer pattern (≥ 3 hits in 24h)
  */
 
+import { inMemoryCrossCaseStore } from '../routes/complaints.routes.js';
+
 // ---------------------------------------------------------------------------
 // Mixer pattern detection — constants (tune here to adjust sensitivity)
 // ---------------------------------------------------------------------------
@@ -181,9 +183,9 @@ export function detectMixerPattern(inboundEdges, outboundEdges) {
 
 /**
  * @param {{ nodes: any[], links: any[], legend: object, meta: object }} forceGraph
- * @returns {{ nodes: any[], links: any[], legend: object, meta: object }}
+ * @returns {Promise<{ nodes: any[], links: any[], legend: object, meta: object }>}
  */
-export function enrichTraceGraph(forceGraph) {
+export async function enrichTraceGraph(forceGraph) {
   const { nodes, links } = forceGraph;
 
   // ── Build adjacency maps ────────────────────────────────────────────────
@@ -201,6 +203,48 @@ export function enrichTraceGraph(forceGraph) {
 
     edgesBySource.get(src).push(link);
     edgesByTarget.get(tgt).push(link);
+  }
+
+  // ── Call AI Microservice (FastAPI GNN) ──────────────────────────────────
+  const nodeIndexMap = new Map();
+  nodes.forEach((n, i) => nodeIndexMap.set(n.id, i));
+
+  const edge_index = [[], []];
+  for (const link of links) {
+    const srcIdx = nodeIndexMap.get(link.source);
+    const tgtIdx = nodeIndexMap.get(link.target);
+    if (srcIdx !== undefined && tgtIdx !== undefined) {
+      edge_index[0].push(srcIdx);
+      edge_index[1].push(tgtIdx);
+    }
+  }
+
+  const x = nodes.map(n => {
+    const features = new Array(165).fill(0.0);
+    features[0] = 1.0; // Time step
+    features[1] = (edgesBySource.get(n.id) || []).length; // out-degree
+    features[2] = (edgesByTarget.get(n.id) || []).length; // in-degree
+    features[3] = n.hop || 0; // depth
+    return features;
+  });
+
+  try {
+    const mlResponse = await fetch('http://localhost:8000/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x, edge_index })
+    });
+    
+    if (mlResponse.ok) {
+      const mlData = await mlResponse.json();
+      if (mlData.illicit_probabilities) {
+        nodes.forEach((n, i) => {
+          n.mlProbability = mlData.illicit_probabilities[i];
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('Failed to reach ML Microservice for AI Risk Scoring', { error: err.message });
   }
 
   // ── Exchange proximity BFS ──────────────────────────────────────────────
@@ -396,22 +440,48 @@ export function enrichTraceGraph(forceGraph) {
 
     // ── 7. Cross-Case Correlation (0-30) ──────────────────────────────────
     let crossCaseScore = 0;
-    if (node.crossCaseIds && node.crossCaseIds.length > 1) {
+    const memSet = inMemoryCrossCaseStore.get(node.id.toLowerCase());
+    const neoCases = node.crossCaseIds || [];
+    const combinedCases = Array.from(new Set([...neoCases, ...(memSet ? Array.from(memSet) : [])]));
+
+    if (combinedCases.length > 1) {
       crossCaseScore = 30; // High signal: shared intermediary
-      factors.push(`Cross-Case Correlation: Intermediary wallet is shared across ${node.crossCaseIds.length} distinct cases (${node.crossCaseIds.join(', ')}).`);
-      tags.add('CROSS_CASE_INTERMEDIARY');
+      node.crossCaseIds = combinedCases;
       node.crossCaseAlert = true; // Signal frontend to render a glowing alert badge
+      factors.push(`Cross-Case Correlation: Intermediary wallet is shared across ${combinedCases.length} distinct cases (${combinedCases.join(', ')}).`);
+      tags.add('CROSS_CASE_INTERMEDIARY');
+    }
+
+    // ── 8. GNN AI Probability (0-40) ──────────────────────────────────────
+    let aiScore = 0;
+    if (node.mlProbability !== undefined) {
+      if (node.mlProbability > 0.8) {
+        aiScore = 40;
+        factors.push(`Graph Neural Network flagged high illicit probability (${(node.mlProbability * 100).toFixed(1)}%).`);
+        tags.add('GNN_ILLICIT_HIGH');
+      } else if (node.mlProbability > 0.5) {
+        aiScore = 20;
+        factors.push(`Graph Neural Network flagged moderate illicit probability (${(node.mlProbability * 100).toFixed(1)}%).`);
+        tags.add('GNN_ILLICIT_MED');
+      }
     }
 
     // ── Aggregate ─────────────────────────────────────────────────────────
     const total = Math.min(
       100,
-      Math.round(velocityScore + peelScore + exchangeProximityScore + taintScore + mixerScore + crossChainScore + privacyScore + otcScore + crossCaseScore)
+      Math.round(velocityScore + peelScore + exchangeProximityScore + taintScore + mixerScore + crossChainScore + privacyScore + otcScore + crossCaseScore + aiScore)
     );
 
     // Preserve any risk score already written to the node (e.g., from Neo4j)
-    // but let the Phase 4 engine dominate when its result is higher.
-    node.riskScore = Math.max(node.riskScore ?? 0, total);
+    // and explicitly track it so the frontend can explain why the score is high.
+    const priorRisk = node.riskScore ?? 0;
+    let priorRiskComponent = 0;
+    
+    if (priorRisk > total) {
+      priorRiskComponent = priorRisk - total;
+    }
+
+    node.riskScore = Math.min(100, Math.max(priorRisk, total));
     node.riskFactors = factors;
     node.tags = [...tags];
     node.riskBreakdown = {
@@ -423,6 +493,9 @@ export function enrichTraceGraph(forceGraph) {
       crossChain: crossChainScore,
       privacy:   privacyScore,
       otcBroker: otcScore,
+      crossCase: crossCaseScore,
+      aiModel:   aiScore,
+      priorRisk: priorRiskComponent,
       total:     node.riskScore,
     };
   }

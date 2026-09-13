@@ -59,6 +59,21 @@ export default function NodeTooltip({ node, onClose }) {
         {node.addressDisplay ?? node.id} ↗
       </a>
 
+      {/* Cross-Case Shared Mule Warning */}
+      {node.crossCaseAlert && (
+        <div className="mb-3 p-2.5 rounded-lg bg-[rgba(225,29,72,0.12)] border border-[#E11D48] flex items-start gap-2">
+          <span className="text-base">⚠️</span>
+          <div className="text-xs">
+            <p className="font-bold text-[#E11D48] uppercase tracking-wider text-[10px]">
+              Shared Mule Infrastructure
+            </p>
+            <p className="text-[var(--color-text-secondary)] mt-0.5 font-mono text-[11px]">
+              Shared across cases: <span className="font-semibold text-white">{node.crossCaseIds?.join(', ')}</span>
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Exchange info */}
       {node.isExchange && (node.exchange || node.exchangeLabel) && (
         <div className="mb-3 p-2 rounded-lg bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.15)]">
@@ -112,9 +127,6 @@ export default function NodeTooltip({ node, onClose }) {
         {node.hop !== null && node.hop !== undefined && (
           <Row label="Hop Distance" value={node.hop} />
         )}
-        {node.hop !== null && node.hop !== undefined && (
-          <Row label="Hop Distance" value={node.hop} />
-        )}
         
         {/* Risk Score Breakdown Visualization */}
         {node.riskBreakdown && (
@@ -136,12 +148,54 @@ export default function NodeTooltip({ node, onClose }) {
 
             {/* Individual factors */}
             <div className="space-y-1.5 pt-2 border-t border-[var(--color-border-subtle)] text-[10px]">
-              <MiniBar label="Velocity" value={node.riskBreakdown.velocity} />
-              <MiniBar label="Peeling Pattern" value={node.riskBreakdown.peeling} />
-              <MiniBar label="Exchange Proximity" value={node.riskBreakdown.proximity} />
-              <MiniBar label="Taint Score" value={node.riskBreakdown.taint} />
-              <MiniBar label="Mixer Interaction" value={node.riskBreakdown.mixer} />
+              {node.riskBreakdown.priorRisk > 0 && (
+                <MiniBar label="Prior Graph Risk" value={node.riskBreakdown.priorRisk} />
+              )}
+              {node.riskBreakdown.velocity > 0 && (
+                <MiniBar label="Velocity" value={node.riskBreakdown.velocity} />
+              )}
+              {node.riskBreakdown.peeling > 0 && (
+                <MiniBar label="Peeling Pattern" value={node.riskBreakdown.peeling} />
+              )}
+              {node.riskBreakdown.proximity > 0 && (
+                <MiniBar label="Exchange Proximity" value={node.riskBreakdown.proximity} />
+              )}
+              {node.riskBreakdown.taint > 0 && (
+                <MiniBar label="Taint Score" value={node.riskBreakdown.taint} />
+              )}
+              {node.riskBreakdown.mixer > 0 && (
+                <MiniBar label="Mixer Interaction" value={node.riskBreakdown.mixer} />
+              )}
+              {node.riskBreakdown.crossChain > 0 && (
+                <MiniBar label="Cross-Chain Flight" value={node.riskBreakdown.crossChain} />
+              )}
+              {node.riskBreakdown.privacy > 0 && (
+                <MiniBar label="Privacy Coin Swap" value={node.riskBreakdown.privacy} />
+              )}
+              {node.riskBreakdown.otcBroker > 0 && (
+                <MiniBar label="Suspected OTC Broker" value={node.riskBreakdown.otcBroker} />
+              )}
+              {node.riskBreakdown.crossCase > 0 && (
+                <MiniBar label="Shared Mule Infrastructure" value={node.riskBreakdown.crossCase} />
+              )}
+              {node.riskBreakdown.aiModel > 0 && (
+                <MiniBar label="GNN AI Model" value={node.riskBreakdown.aiModel} />
+              )}
             </div>
+
+            {/* Textual Risk Factors */}
+            {node.riskFactors && node.riskFactors.length > 0 && (
+              <div className="pt-2 border-t border-[var(--color-border-subtle)]">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">Risk Factors</p>
+                <ul className="list-disc pl-3 text-[10px] space-y-1 text-[var(--color-text-secondary)]">
+                  {node.riskFactors.map((factor, idx) => (
+                    <li key={idx} className={factor.includes('Graph Neural Network') ? 'text-[#E11D48] font-semibold' : ''}>
+                      {factor}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
         <Row label="Volume (≈USD)" value={`$${formatAmount(node.volumeUsdApprox)}`} />

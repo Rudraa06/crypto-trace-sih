@@ -22,6 +22,8 @@ import { graphRouter } from './routes/graph.routes.js';
 import { traceRouter } from './routes/trace.routes.js';
 import { aiRouter } from './routes/ai.routes.js';
 import { complaintsRouter } from './routes/complaints.routes.js';
+import { crossChainRouter } from './routes/crossChain.routes.js';
+import { exportRouter } from './routes/export.routes.js';
 import { alertRouter } from './services/alertEngine.service.js';
 import { checkRpcHealth } from './services/provider.js';
 import { verifyGraphConnectivity } from './services/neo4j.service.js';
@@ -71,15 +73,16 @@ export function createApp() {
   // --- Rate Limiting -------------------------------------------------------
   const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+    max: 10000, // High ceiling to support frontend status polling loops
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.path === '/health' || req.path.includes('/status/'),
     message: { ok: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later.' } }
   });
 
   const strictLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 1000, // Increased for demo/testing purposes
+    max: 5000,
     standardHeaders: true,
     legacyHeaders: false,
     message: { ok: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests to expensive endpoints.' } }
@@ -149,18 +152,13 @@ export function createApp() {
   app.use('/api', requireApiKey, historyRouter);
   app.use('/api', graphRouter);
   
-  app.use('/api', (req, res, next) => {
-    if (req.path.startsWith('/trace/')) {
-      const isIngestOff = ['false', '0', 'no', 'off'].includes(String(req.query.ingest).toLowerCase());
-      if (!isIngestOff) {
-        return requireApiKey(req, res, next);
-      }
-    }
-    next();
-  }, traceRouter);
+  app.use('/api', requireApiKey, traceRouter);
+
+  app.use('/api', requireApiKey, exportRouter);
 
   app.use('/api/ai', strictLimiter, requireApiKey, aiRouter);
   app.use('/api/complaints', strictLimiter, requireApiKey, complaintsRouter);
+  app.use('/api/cross-chain', requireApiKey, crossChainRouter);
   app.use('/api', alertRouter);
 
   // --- Root banner ---------------------------------------------------------

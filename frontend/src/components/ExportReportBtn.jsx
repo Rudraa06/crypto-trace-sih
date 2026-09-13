@@ -13,9 +13,13 @@ export default function ExportReportBtn({ traceData }) {
 
     try {
       // 1. Ask AI for the case brief
+      const apiKey = import.meta.env.VITE_INTERNAL_API_KEY;
+      const headers = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['X-API-Key'] = apiKey;
+
       const res = await fetch(`${API_BASE}/api/ai/generate-summary`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ traceData })
       });
       const aiResponse = await res.json();
@@ -24,9 +28,14 @@ export default function ExportReportBtn({ traceData }) {
       let y = 20;
 
       // Header
+      doc.setFontSize(10);
+      doc.setTextColor(220, 38, 38);
+      doc.text("CONFIDENTIAL - LAW ENFORCEMENT SENSITIVE", 14, y);
+      y += 10;
+
       doc.setFontSize(22);
       doc.setTextColor(30, 64, 175); // Dark blue
-      doc.text("CryptoTrace Forensic Dossier", 14, y);
+      doc.text("BSA Section 63 Compliant Evidence Export", 14, y);
       y += 10;
       
       doc.setFontSize(10);
@@ -123,9 +132,9 @@ export default function ExportReportBtn({ traceData }) {
         doc.text(splitNotice, 14, y);
       }
 
-      doc.save('CryptoTrace_Case_Dossier.pdf');
+      doc.save('BSA_Section_63_Evidence.pdf');
     } catch (error) {
-      console.error('Export failed', error);
+      if (!import.meta.env.PROD) console.error('Export failed', error);
       alert('Failed to generate export. Check console.');
     } finally {
       setLoading(false);
