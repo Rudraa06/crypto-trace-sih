@@ -56,6 +56,7 @@
  *   MIXER_INTERACTION       fixed-denomination transfer pattern (≥ 3 hits in 24h)
  */
 
+import { logger } from '../lib/logger.js';
 import { inMemoryCrossCaseStore } from '../routes/complaints.routes.js';
 
 // ---------------------------------------------------------------------------
