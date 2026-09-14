@@ -16,19 +16,30 @@ export default function Layout({ children, viewMode, onToggleView, onOpenCopilot
     <div className="h-dvh flex flex-col overflow-hidden">
       {/* ---- Header ---- */}
       <header className="flex items-center justify-between px-3 sm:px-5 py-2 border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-primary)] z-20 flex-shrink-0">
-        {/* Left: exact uploaded logo */}
+        {/* Left: Brand Identity Header */}
         <div className="flex items-center gap-3">
-          <div className="px-2 py-1 rounded-xl bg-slate-900/90 border border-slate-700/50 shadow-md flex items-center">
+          <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80 shadow-md backdrop-blur-md">
             <img 
               src="/logo.jpeg" 
-              alt="CryptoTrace" 
-              className="h-8 sm:h-10 w-auto object-contain rounded-md"
+              alt="CryptoTrace Emblem" 
+              className="h-8 sm:h-9 w-auto object-contain rounded-lg flex-shrink-0"
             />
-          </div>
-          <div className="hidden md:block border-l border-slate-800 pl-3 py-0.5">
-            <p className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
-              Blockchain Fraud Analytics
-            </p>
+            <div className="flex flex-col justify-center">
+              <div className="flex items-center gap-2">
+                <span className="text-sm sm:text-base font-black tracking-tight text-slate-100">
+                  Crypto<span className="gradient-text font-black">Trace</span>
+                </span>
+                <span className="text-[9px] font-mono font-semibold tracking-widest uppercase px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 hidden lg:inline-block">
+                  SIH 2026
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <p className="text-[10px] sm:text-[11px] font-bold text-slate-300 tracking-wider font-sans uppercase">
+                  Blockchain Fraud Analytics
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 
