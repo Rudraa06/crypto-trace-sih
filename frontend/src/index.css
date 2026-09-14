@@ -13,25 +13,25 @@
   --font-sans: 'Outfit', 'Space Grotesk', 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;
 
-  /* Colours — SOC Analyst Palette */
-  --color-bg-primary: #161920; /* Deep Slate */
-  --color-bg-card: #222631; /* Elevated Slate */
-  --color-bg-card-hover: #2A2E3B;
-  --color-border-subtle: #333845;
-  --color-border-accent: #F59E0B; /* Amber/Gold */
+  /* Colours — Matching Official CryptoTrace Logo Palette */
+  --color-bg-primary: #11141D; /* Deep Obsidian Slate */
+  --color-bg-card: #1D2230; /* Elevated Card Slate */
+  --color-bg-card-hover: #262C3D;
+  --color-border-subtle: #2D3448;
+  --color-border-accent: #3B82F6; /* Sapphire Blue */
 
   --color-text-primary: #F8FAFC;
   --color-text-secondary: #CBD5E1;
   --color-text-muted: #64748B;
-  --color-text-accent: #F59E0B;
+  --color-text-accent: #3B82F6;
 
   /* Accent gradient (Action) */
-  --color-accent-from: #F59E0B;
-  --color-accent-to: #D97706;
+  --color-accent-from: #3B82F6;
+  --color-accent-to: #8B5CF6;
 
   /* Copilot gradient */
-  --color-copilot-from: #3B82F6;
-  --color-copilot-to: #60A5FA;
+  --color-copilot-from: #06B6D4;
+  --color-copilot-to: #3B82F6;
 
   /* Status */
   --color-status-ok: #10B981;
@@ -120,19 +120,23 @@ body::after {
   border-radius: 4px;
 }
 
-/* Accent gradient text */
+/* Accent gradient text matching logo */
 .gradient-text {
-  color: var(--color-accent-from);
+  background: linear-gradient(135deg, #FFFFFF 25%, #60A5FA 65%, #A78BFA 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .gradient-text-copilot {
-  color: var(--color-copilot-from);
+  background: linear-gradient(135deg, #38BDF8 0%, #818CF8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 /* Accent gradient button */
 .btn-accent {
-  background: var(--color-accent-from);
-  color: #161920;
+  background: linear-gradient(135deg, var(--color-accent-from) 0%, var(--color-accent-to) 100%);
+  color: #FFFFFF;
   font-weight: 600;
   padding: 0.5rem 1.5rem;
   border-radius: 4px;

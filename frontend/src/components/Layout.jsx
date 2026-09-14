@@ -17,16 +17,15 @@ export default function Layout({ children, viewMode, onToggleView, onOpenCopilot
       {/* ---- Header ---- */}
       <header className="flex items-center justify-between px-3 sm:px-5 py-2 border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-primary)] z-20 flex-shrink-0">
         {/* Left: logo + title */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Hex logo */}
-          <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-br from-[var(--color-accent-from)] to-[var(--color-accent-to)] flex items-center justify-center flex-shrink-0">
-            <svg className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-          </div>
+        <div className="flex items-center gap-2.5 sm:gap-3.5">
+          <img 
+            src="/logo.jpeg" 
+            alt="CryptoTrace Logo" 
+            className="w-9 h-9 sm:w-10 sm:h-10 object-cover rounded-xl shadow-md border border-blue-500/30 ring-1 ring-blue-500/20 flex-shrink-0"
+          />
           <div>
-            <h1 className="text-sm sm:text-base font-bold gradient-text leading-tight">CryptoTrace</h1>
-            <p className="text-[9px] sm:text-[10px] text-[var(--color-text-muted)] leading-none mt-0.5 tracking-wide hidden sm:block">
+            <h1 className="text-sm sm:text-base font-extrabold gradient-text leading-tight tracking-tight">CryptoTrace</h1>
+            <p className="text-[9px] sm:text-[10px] text-[var(--color-text-muted)] font-medium leading-none mt-0.5 tracking-wider hidden sm:block uppercase">
               Blockchain Fraud Analytics
             </p>
           </div>
