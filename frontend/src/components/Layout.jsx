@@ -16,16 +16,17 @@ export default function Layout({ children, viewMode, onToggleView, onOpenCopilot
     <div className="h-dvh flex flex-col overflow-hidden">
       {/* ---- Header ---- */}
       <header className="flex items-center justify-between px-3 sm:px-5 py-2 border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-primary)] z-20 flex-shrink-0">
-        {/* Left: logo + title */}
-        <div className="flex items-center gap-2.5 sm:gap-3.5">
-          <img 
-            src="/logo.jpeg" 
-            alt="CryptoTrace Logo" 
-            className="w-9 h-9 sm:w-10 sm:h-10 object-cover rounded-xl shadow-md border border-blue-500/30 ring-1 ring-blue-500/20 flex-shrink-0"
-          />
-          <div>
-            <h1 className="text-sm sm:text-base font-extrabold gradient-text leading-tight tracking-tight">CryptoTrace</h1>
-            <p className="text-[9px] sm:text-[10px] text-[var(--color-text-muted)] font-medium leading-none mt-0.5 tracking-wider hidden sm:block uppercase">
+        {/* Left: exact uploaded logo */}
+        <div className="flex items-center gap-3">
+          <div className="px-2 py-1 rounded-xl bg-slate-900/90 border border-slate-700/50 shadow-md flex items-center">
+            <img 
+              src="/logo.jpeg" 
+              alt="CryptoTrace" 
+              className="h-8 sm:h-10 w-auto object-contain rounded-md"
+            />
+          </div>
+          <div className="hidden md:block border-l border-slate-800 pl-3 py-0.5">
+            <p className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
               Blockchain Fraud Analytics
             </p>
           </div>
