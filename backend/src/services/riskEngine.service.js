@@ -230,7 +230,8 @@ export async function enrichTraceGraph(forceGraph) {
   });
 
   try {
-    const mlResponse = await fetch('http://localhost:8000/predict', {
+    const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+    const mlResponse = await fetch(`${ML_SERVICE_URL}/predict`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ x, edge_index })
