@@ -475,10 +475,21 @@ export async function ingestToGraph(transactionsOrTrace, wallets = [], options =
   const batchSize = config.graph.batchSize;
   const chunkedWallets = chunk(walletRows, batchSize);
   const chunkedTransactions = chunk(transactionRows, batchSize);
+  const totalBatches = chunkedWallets.length + chunkedTransactions.length;
+  let currentBatch = 0;
   
   try {
     for (const rows of chunkedWallets) {
       batchesAttempted += 1;
+      currentBatch += 1;
+      if (typeof options.onProgress === 'function') {
+        options.onProgress({
+          phase: 'wallets',
+          batch: currentBatch,
+          totalBatches,
+          count: rows.length,
+        });
+      }
       const result = await runInTransaction('WRITE', async (tx) => tx.run(WALLET_MERGE_CYPHER, { rows }));
       addCounters(counters, extractCounters(result));
       batchesSucceeded += 1;
@@ -486,6 +497,15 @@ export async function ingestToGraph(transactionsOrTrace, wallets = [], options =
 
     for (const rows of chunkedTransactions) {
       batchesAttempted += 1;
+      currentBatch += 1;
+      if (typeof options.onProgress === 'function') {
+        options.onProgress({
+          phase: 'transactions',
+          batch: currentBatch,
+          totalBatches,
+          count: rows.length,
+        });
+      }
       const result = await runInTransaction('WRITE', async (tx) =>
         tx.run(TRANSACTION_MERGE_CYPHER, { rows })
       );

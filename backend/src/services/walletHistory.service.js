@@ -138,7 +138,7 @@ function makeWalletNode(address, hop) {
  */
 export async function fetchWalletHistory(address, depth = config.defaultTraceDepth, options = {}) {
   const startedAt = Date.now();
-  const { signal } = options;
+  const { signal, onProgress } = options;
 
   // --- Validate and clamp inputs ------------------------------------------
   const root = normalizeAddress(address); // throws InvalidAddressError -> HTTP 400
@@ -224,6 +224,12 @@ export async function fetchWalletHistory(address, depth = config.defaultTraceDep
     }
 
     logger.info('Expanding BFS frontier', { hop, addresses: expandable.length });
+    if (onProgress) {
+      onProgress({ hop, addresses: expandable.length, completed: 0 });
+    }
+
+    let completedAddresses = 0;
+    const totalAddresses = expandable.length;
 
     // Fetch the whole frontier in parallel, bounded by the RPC concurrency cap.
     // `settleWithConcurrency` means one bad address cannot sink the trace: a
@@ -233,6 +239,10 @@ export async function fetchWalletHistory(address, depth = config.defaultTraceDep
       config.rpcConcurrency,
       async (candidate) => {
         const result = await fetchOutgoingTransfers(candidate, { signal });
+        completedAddresses += 1;
+        if (typeof onProgress === 'function') {
+          onProgress({ hop, addresses: totalAddresses, completed: completedAddresses });
+        }
         return { candidate, ...result };
       }
     );

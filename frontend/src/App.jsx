@@ -23,15 +23,17 @@ const StoryTimelineView = lazy(() => import('./components/StoryTimelineView.jsx'
 import AiCopilotDrawer from './components/AiCopilotDrawer.jsx';
 import ExportReportBtn from './components/ExportReportBtn.jsx';
 import AlertsTray from './components/AlertsTray.jsx';
+import { TraceLoadingPanel } from './components/TraceLoadingPanel.jsx';
 import { useTrace } from './hooks/useTrace.js';
 
 export default function App() {
-  const { data, error, loading, trace } = useTrace();
+  const { data, error, loading, progress, trace } = useTrace();
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [requestedDepth, setRequestedDepth] = useState(15);
   const [viewMode, setViewMode] = useState('graph');
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
 
   // Graph container sizing
   const graphContainerRef = useRef(null);
@@ -63,6 +65,7 @@ export default function App() {
       setRequestedDepth(opts.maxHops ?? 15);
       trace(address, opts);
       setIsSidebarOpen(true);
+      setShowSummary(true);
     },
     [trace]
   );
@@ -86,7 +89,7 @@ export default function App() {
         
         {/* Main area (Graph or Timeline) spans full viewport behind UI */}
         <div ref={graphContainerRef} className="absolute inset-0 z-0">
-            {hasGraph ? (
+            {hasGraph && (
               viewMode === 'graph' ? (
                 <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center"><svg className="w-8 h-8 animate-spin text-[var(--color-accent-from)]" fill="none" viewBox="0 0 24 24"><circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg></div>}>
                   <GraphCanvas
@@ -106,7 +109,9 @@ export default function App() {
                   />
                 </Suspense>
               )
-            ) : !loading && !data ? (
+            )}
+            
+            {!loading && !data && (
               /* Landing state */
               <div className="absolute inset-0 flex items-center justify-center">
                 <div className="text-center animate-fade-in max-w-md px-6">
@@ -139,23 +144,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            ) : loading ? (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="text-center animate-fade-in">
-                  <svg className="w-12 h-12 mx-auto mb-4 animate-spin-slow text-[var(--color-accent-from)]" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                    <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z" />
-                  </svg>
-                  <p className="text-sm text-[var(--color-text-secondary)]">
-                    Tracing fund flows…
-                  </p>
-                  <CountdownTimer initialSeconds={Math.floor((15000 + Math.pow(requestedDepth, 1.5) * 5000) / 1000)} depth={requestedDepth} />
-                  <p className="text-[10px] text-[var(--color-text-muted)] mt-1 max-w-[250px] mx-auto leading-tight">
-                    The trace will automatically return a partial graph if it takes longer than the estimated time.
-                  </p>
-                </div>
-              </div>
-            ) : null}
+            )}
 
             {/* Legend overlay */}
             {hasGraph && (
@@ -244,6 +233,18 @@ export default function App() {
           </button>
         )}
 
+        {/* Loading and Summary Overlay (z-50 ensures it covers HUD and Sidebar) */}
+        {(loading || (showSummary && data)) && (
+          <div className="absolute inset-0 flex items-center justify-center z-50 bg-slate-900/80 backdrop-blur-sm transition-opacity duration-300">
+            <TraceLoadingPanel 
+              progress={progress} 
+              requestedDepth={requestedDepth} 
+              finalData={showSummary && data ? data : null} 
+              onContinue={() => setShowSummary(false)} 
+            />
+          </div>
+        )}
+
       </div>
       
       <AiCopilotDrawer 
@@ -256,20 +257,3 @@ export default function App() {
   );
 }
 
-function CountdownTimer({ initialSeconds, depth }) {
-  const [timeLeft, setTimeLeft] = useState(initialSeconds);
-
-  useEffect(() => {
-    if (timeLeft <= 0) return;
-    const interval = setInterval(() => {
-      setTimeLeft(prev => prev - 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [timeLeft]);
-
-  return (
-    <p className="text-xs font-mono text-[var(--color-text-accent)] mt-2">
-      Estimated time left: {timeLeft}s (Depth: {depth} hops)
-    </p>
-  );
-}

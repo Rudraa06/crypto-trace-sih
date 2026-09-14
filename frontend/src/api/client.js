@@ -84,22 +84,62 @@ async function request(path, opts = {}) {
  * @param {string} address  Ethereum address (any casing).
  * @param {object} [options]
  * @param {number} [options.maxHops=15]
- * @param {number} [options.depth=3]  Only used if auto-ingest triggers.
- * @param {boolean} [options.context=true]
- * @returns {Promise<object>}
  */
-export async function traceAddress(address, options = {}) {
+
+/**
+ * Consume Server-Sent Events (SSE) via native EventSource.
+ */
+async function consumeSSE(endpoint, onProgress) {
+  const apiKey = import.meta.env.VITE_INTERNAL_API_KEY || 'sih_dev_key_938472';
+  const urlParams = endpoint.includes('?') ? `&apiKey=${apiKey}` : `?apiKey=${apiKey}`;
+  const url = import.meta.env.VITE_API_URL 
+    ? `${import.meta.env.VITE_API_URL}${endpoint}${urlParams}` 
+    : `${endpoint}${urlParams}`;
+
+  return new Promise((resolve) => {
+    const es = new EventSource(url);
+    
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        onProgress(data);
+        if (data.stage === 'done' || data.stage === 'error') {
+          es.close();
+          resolve();
+        }
+      } catch (e) {}
+    };
+
+    es.onerror = (err) => {
+      console.warn('SSE EventSource failed or closed', err);
+      es.close();
+      resolve();
+    };
+  });
+}
+
+/**
+ * Initiates a full pipeline trace (Graph pathfinding + on-chain fallback).
+ * 
+ * @param {string} address The wallet address to trace
+ * @param {object} options Query parameters (maxHops, context, etc)
+ * @param {function} [onProgress] Callback for SSE progress events
+ * @returns {Promise<object>} The trace response payload
+ */
+export async function traceAddress(address, options = {}, onProgress = null) {
   const params = new URLSearchParams();
-  if (options.maxHops !== undefined) params.set('maxHops', options.maxHops);
-  if (options.depth !== undefined) params.set('depth', options.depth);
-  if (options.context !== undefined) params.set('context', options.context);
+  if (options.maxHops) params.append('maxHops', options.maxHops);
+  if (options.context === false) params.append('context', 'false');
 
-  const query = params.toString();
-  const path = `/api/trace/${encodeURIComponent(address)}${query ? `?${query}` : ''}`;
-
-  let response = await request(path, { timeoutMs: 300_000 });
+  const qs = params.toString();
+  const endpoint = `/api/trace/${address}${qs ? `?${qs}` : ''}`;
+  
+  const response = await request(endpoint, { timeoutMs: 30_000 });
 
   if (response.status === 'processing' && response.jobId) {
+    if (onProgress) {
+      await consumeSSE(`/api/trace/stream/${response.jobId}`, onProgress);
+    }
     while (true) {
       await new Promise(r => setTimeout(r, 3000));
       const pollResponse = await request(`/api/trace/status/${response.jobId}`, { timeoutMs: 10_000 });
@@ -114,24 +154,22 @@ export async function traceAddress(address, options = {}) {
 }
 
 /**
- * Mock NCRP Complaint Ingestion.
- * Phase 7: POST /api/complaints/ingest
- * 
- * @param {object} payload
- * @param {string} payload.walletAddress
- * @param {string} payload.complaintId
- * @param {string} payload.fraudType
- * @param {number} [payload.maxHops]
+ * Submits a mock complaint to trigger the ingestion and risk pipeline.
+ * @param {object} payload - The complaint details
+ * @param {function} [onProgress] - Callback for SSE progress events
  */
-export async function ingestComplaint(payload) {
-  let response = await request('/api/complaints/ingest', {
+export async function ingestComplaint(payload, onProgress = null) {
+  const response = await request('/api/complaints/ingest', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    timeoutMs: 300_000
+    timeoutMs: 15_000
   });
 
   if (response.status === 'processing' && response.jobId) {
+    if (onProgress) {
+      await consumeSSE(`/api/complaints/stream/${response.jobId}`, onProgress);
+    }
     while (true) {
       await new Promise(r => setTimeout(r, 3000));
       const pollResponse = await request(`/api/complaints/status/${response.jobId}`, { timeoutMs: 10_000 });

@@ -56,6 +56,7 @@ import { enrichTraceGraph } from '../services/riskEngine.service.js';
 import { generateCaseBrief } from '../services/aiNarrative.service.js';
 import { evaluateTrace } from '../services/alertEngine.service.js';
 import { Redis } from 'ioredis';
+import { progressEmitter, reportProgress, getLastEvent } from '../services/progress.service.js';
 
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
   maxRetriesPerRequest: 1,
@@ -139,14 +140,22 @@ function parseMaxHops(raw) {
  * answer plus an explanation of why the fallback did not help is more useful
  * than a 500.
  *
-async function ingestFromChain(address, depth) {
+async function ingestFromChain(address, depth, jobId) {
   // Dynamic timeout based on requested depth to prevent exponential fan-out crashes
   const timeoutMs = Math.floor(15000 + Math.pow(depth, 1.5) * 5000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const history = await fetchWalletHistory(address, depth, { signal: controller.signal });
+    const history = await fetchWalletHistory(address, depth, { 
+      signal: controller.signal,
+      onProgress: ({ hop, addresses, completed }) => {
+        const detail = completed 
+          ? `Fetched ${completed}/${addresses} wallets in Hop ${hop + 1}`
+          : `Tracing ${addresses} wallets`;
+        reportProgress(jobId, 'fetching_history', `Pulling on-chain transfers (Hop ${hop + 1}/${depth})`, detail);
+      }
+    });
     // Cleared before ingestion so a slow-but-successful chain fetch is not
     // misreported as a timeout while the database write is still running.
     clearTimeout(timer);
@@ -173,7 +182,19 @@ async function ingestFromChain(address, depth) {
       }
     }
 
-    const summary = await ingestToGraph(allTransactions, allWallets);
+    reportProgress(jobId, 'ingesting', 'Writing wallets and transfers into graph database…', `${allTransactions.length} transfers found`);
+    const summary = await ingestToGraph(allTransactions, allWallets, {
+      onProgress: ({ phase, batch, totalBatches, count }) => {
+        reportProgress(
+          jobId,
+          'ingesting',
+          phase === 'wallets' 
+            ? `Ingesting wallet batch ${batch}/${totalBatches} into Neo4j`
+            : `Ingesting transaction batch ${batch}/${totalBatches} into Neo4j`,
+          `Processing ${count} ${phase} (Batch ${batch}/${totalBatches})`
+        );
+      }
+    });
     return {
       attempted: true,
       ok: summary.ok,
@@ -294,6 +315,7 @@ traceRouter.get(
     // Execute trace query and potential on-chain fallback in background
     (async () => {
       try {
+        reportProgress(jobId, 'pathfinding', 'Searching for the shortest route to a known exchange…');
         let result = await findCashOutPaths(address, options);
         let ingestion = null;
 
@@ -302,16 +324,18 @@ traceRouter.get(
             address: addressDisplay,
             depth,
           });
-          ingestion = await ingestFromChain(address, depth);
+          ingestion = await ingestFromChain(address, depth, jobId);
           if (ingestion.ok && ingestion.wroteAnything) {
+            reportProgress(jobId, 'pathfinding', 'Searching graph again after successful ingestion…');
             result = await findCashOutPaths(address, options);
           }
         }
 
         const finalResponse = await assembleTraceResponse(
-          result, options, ingestion, depthWasClamped, depth, address, addressDisplay, includeForceGraph
+          result, options, ingestion, depthWasClamped, depth, address, addressDisplay, includeForceGraph, jobId
         );
 
+        reportProgress(jobId, 'done', 'Trace complete.');
         traceJobs.set(jobId, { status: 'done', response: finalResponse });
         await redis.setex(jobId, 600, JSON.stringify({ status: 'done', response: finalResponse })).catch(() => null);
         await redis.setex(cacheKey, TRACE_CACHE_TTL, JSON.stringify(finalResponse)).catch(() => null);
@@ -324,7 +348,7 @@ traceRouter.get(
   })
 );
 
-async function assembleTraceResponse(result, options, ingestion, depthWasClamped, depth, address, addressDisplay, includeForceGraph) {
+async function assembleTraceResponse(result, options, ingestion, depthWasClamped, depth, address, addressDisplay, includeForceGraph, jobId) {
   const warnings = [...(result.warnings ?? [])];
 
   if (depthWasClamped) {
@@ -342,9 +366,14 @@ async function assembleTraceResponse(result, options, ingestion, depthWasClamped
       'moved other tokens will look empty here.');
   }
 
-  let finalForceGraph = includeForceGraph ? await enrichTraceGraph(toForceGraph(result)) : null;
+  let finalForceGraph = null;
+  if (includeForceGraph) {
+    reportProgress(jobId, 'risk_scoring', 'Scoring wallet risk across velocity, fan-out, and mixer patterns…');
+    finalForceGraph = await enrichTraceGraph(toForceGraph(result));
+  }
 
   if (finalForceGraph && finalForceGraph.nodes.length > 500) {
+    reportProgress(jobId, 'partial', 'Graph is massive — taking longer than expected. Pruning for performance.', `Pruning ${finalForceGraph.nodes.length} nodes`);
     warnings.push(`Graph contained ${finalForceGraph.nodes.length} nodes. Pruned non-essential context nodes to improve performance.`);
     const essentialNodes = new Set();
     finalForceGraph.nodes = finalForceGraph.nodes.filter(n => {
@@ -362,6 +391,7 @@ async function assembleTraceResponse(result, options, ingestion, depthWasClamped
 
   let aiNarrative = null;
   if (result.found && finalForceGraph) {
+    reportProgress(jobId, 'ai_brief', 'Asking the AI copilot to draft a case summary…');
     const tracePayload = {
       query: { address, addressDisplay },
       paths: result.paths,
@@ -408,3 +438,58 @@ traceRouter.get(['/status/:jobId', '/trace/status/:jobId'], asyncRoute(async (re
   if (parsed.status === 'error') return res.status(500).json(parsed);
   return res.json(parsed.response || parsed);
 }));
+
+/**
+ * GET /api/trace/stream/:jobId
+ * Server-Sent Events (SSE) endpoint for real-time trace progress.
+ */
+traceRouter.get(['/stream/:jobId', '/trace/stream/:jobId'], (req, res) => {
+  const { jobId } = req.params;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*' // If needed depending on CORS setup
+  });
+
+  // Send an initial heartbeat
+  res.write(': heartbeat\n\n');
+
+  // Check if the job is already finished to prevent the client from hanging forever
+  // if they connect after the background job has completed.
+  const job = traceJobs.get(jobId);
+  if (job) {
+    if (job.status === 'done') {
+      res.write(`data: ${JSON.stringify({ stage: 'done', message: 'Trace complete.' })}\n\n`);
+      return res.end();
+    }
+    if (job.status === 'error') {
+      res.write(`data: ${JSON.stringify({ stage: 'error', message: job.error })}\n\n`);
+      return res.end();
+    }
+  }
+
+  // Emit the last known state so the client doesn't miss the current stage if they connected late
+  const lastEvent = getLastEvent(jobId);
+  if (lastEvent) {
+    res.write(`data: ${JSON.stringify(lastEvent)}\n\n`);
+  }
+
+  const onProgress = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    
+    // Close the stream if we hit a terminal state
+    if (data.stage === 'done' || data.stage === 'error') {
+      progressEmitter.removeListener(`progress:${jobId}`, onProgress);
+      res.end();
+    }
+  };
+
+  progressEmitter.on(`progress:${jobId}`, onProgress);
+
+  // Clean up if the client disconnects early
+  req.on('close', () => {
+    progressEmitter.removeListener(`progress:${jobId}`, onProgress);
+  });
+});

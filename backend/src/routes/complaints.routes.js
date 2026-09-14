@@ -26,6 +26,7 @@ import { toForceGraph } from '../lib/forceGraph.js';
 import { enrichTraceGraph } from '../services/riskEngine.service.js';
 import { runInTransaction } from '../services/neo4j.service.js';
 import { evaluateTrace } from '../services/alertEngine.service.js';
+import { progressEmitter, reportProgress, getLastEvent } from '../services/progress.service.js';
 
 export const complaintsRouter = Router();
 export const complaintJobs = new Map();
@@ -87,7 +88,14 @@ complaintsRouter.post(
         const traceDepth = typeof maxHops !== 'undefined' ? parseInt(maxHops, 10) : config.defaultTraceDepth;
         console.log(`[ComplaintIngest] Starting background job ${jobId} for address ${address}`);
 
-        const history = await fetchWalletHistory(address, traceDepth);
+        const history = await fetchWalletHistory(address, traceDepth, {
+          onProgress: ({ hop, addresses, completed }) => {
+            const detail = completed 
+              ? `Fetched ${completed}/${addresses} wallets in Hop ${hop + 1}`
+              : `Tracing ${addresses} wallets`;
+            reportProgress(jobId, 'fetching_history', `Pulling on-chain transfers (Hop ${hop + 1}/${traceDepth})`, detail);
+          }
+        });
         const allTransactions = [...history.transactions];
         const allWallets = [...history.wallets];
         
@@ -99,9 +107,22 @@ complaintsRouter.post(
         }
         
         let wroteAnything = false;
+        let ingestionSummary = null;
         if (allTransactions.length > 0 && config.graph.enabled) {
-          await ingestToGraph(allTransactions, allWallets).catch(() => null);
-          wroteAnything = true;
+          reportProgress(jobId, 'ingesting', 'Writing wallets and transfers into graph database…', `${allTransactions.length} transfers found`);
+          ingestionSummary = await ingestToGraph(allTransactions, allWallets, {
+            onProgress: ({ phase, batch, totalBatches, count }) => {
+              reportProgress(
+                jobId,
+                'ingesting',
+                phase === 'wallets'
+                  ? `Ingesting wallet batch ${batch}/${totalBatches} into Neo4j`
+                  : `Ingesting transaction batch ${batch}/${totalBatches} into Neo4j`,
+                `Processing ${count} ${phase} (Batch ${batch}/${totalBatches})`
+              );
+            }
+          }).catch(() => null);
+          wroteAnything = Boolean(ingestionSummary?.batchesSucceeded > 0 || ingestionSummary?.ok);
         }
 
         // Always register in inMemoryCrossCaseStore for fallback/mock mode
@@ -143,24 +164,29 @@ complaintsRouter.post(
         }
 
         console.log('[ComplaintIngest] Step 4: Running shortestPath trace');
+        reportProgress(jobId, 'pathfinding', 'Searching for the shortest route to a known exchange…');
         let traceResult = await findCashOutPaths(address, { maxHops: traceDepth });
         
-        // Emulate the ingestion object expected by the frontend's EmptyState.jsx
+        // Emulate the ingestion object expected by the frontend's EmptyState.jsx / TraceLoadingPanel.jsx
         traceResult.ingestion = {
           attempted: true,
           ok: true,
           wroteAnything,
-          depth: traceDepth
+          depth: traceDepth,
+          walletsWritten: ingestionSummary?.walletsWritten ?? allWallets.length,
+          transactionsWritten: ingestionSummary?.transactionsWritten ?? allTransactions.length,
         };
         
         console.log('[ComplaintIngest] Step 4a: traceResult found:', traceResult.found);
         if (traceResult.found) {
           console.log('[ComplaintIngest] Step 4b: enriching graph');
+          reportProgress(jobId, 'risk_scoring', 'Scoring wallet risk across velocity, fan-out, and mixer patterns…');
           let finalForceGraph = await enrichTraceGraph(toForceGraph(traceResult));
           
           // Apply graph pruning if nodes exceed 500
           if (finalForceGraph && finalForceGraph.nodes.length > 500) {
             console.log(`[ComplaintIngest] Pruning massive graph from ${finalForceGraph.nodes.length} nodes`);
+            reportProgress(jobId, 'partial', 'Graph is massive — taking longer than expected. Pruning for performance.', `Pruning ${finalForceGraph.nodes.length} nodes`);
             const essentialNodes = new Set();
             finalForceGraph.nodes = finalForceGraph.nodes.filter(n => {
               if (n.onPath || n.isExchange) {
@@ -178,10 +204,12 @@ complaintsRouter.post(
           
           traceResult.forceGraph = finalForceGraph;
           console.log('[ComplaintIngest] Step 4c: evaluating trace');
+          reportProgress(jobId, 'ai_brief', 'Evaluating cross-case alerts…');
           evaluateTrace(traceResult, caseId);
         }
 
         console.log(`[ComplaintIngest] Completed job ${jobId}`);
+        reportProgress(jobId, 'done', 'Trace complete.');
         complaintJobs.set(jobId, {
           status: 'completed',
           result: {
@@ -194,6 +222,7 @@ complaintsRouter.post(
         });
       } catch (err) {
         console.error('[ComplaintIngest] Complaint ingestion failed:', err);
+        reportProgress(jobId, 'error', `Complaint ingestion failed: ${err.message}`);
         complaintJobs.set(jobId, {
           status: 'failed',
           error: err.message || 'Complaint ingestion failed'
@@ -228,3 +257,56 @@ complaintsRouter.get(
     });
   })
 );
+
+/**
+ * GET /api/complaints/stream/:jobId
+ * Server-Sent Events (SSE) endpoint for real-time trace progress.
+ */
+complaintsRouter.get(['/stream/:jobId', '/complaints/stream/:jobId'], (req, res) => {
+  const { jobId } = req.params;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*' // If needed depending on CORS setup
+  });
+
+  // Send an initial heartbeat
+  res.write(': heartbeat\n\n');
+
+  const job = complaintJobs.get(jobId);
+  if (job) {
+    if (job.status === 'completed') {
+      res.write(`data: ${JSON.stringify({ stage: 'done', message: 'Trace complete.' })}\n\n`);
+      return res.end();
+    }
+    if (job.status === 'failed') {
+      res.write(`data: ${JSON.stringify({ stage: 'error', message: job.error })}\n\n`);
+      return res.end();
+    }
+  }
+
+  // Emit the last known state so the client doesn't miss the current stage if they connected late
+  const lastEvent = getLastEvent(jobId);
+  if (lastEvent) {
+    res.write(`data: ${JSON.stringify(lastEvent)}\n\n`);
+  }
+
+  const onProgress = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    
+    // Close the stream if we hit a terminal state
+    if (data.stage === 'done' || data.stage === 'error') {
+      progressEmitter.removeListener(`progress:${jobId}`, onProgress);
+      res.end();
+    }
+  };
+
+  progressEmitter.on(`progress:${jobId}`, onProgress);
+
+  // Clean up if the client disconnects early
+  req.on('close', () => {
+    progressEmitter.removeListener(`progress:${jobId}`, onProgress);
+  });
+});
