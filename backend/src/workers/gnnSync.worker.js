@@ -23,7 +23,10 @@ export async function syncGnnClassification(walletAddress) {
   try {
     const response = await fetch(`${ML_SERVICE_URL}/predict/otc-risk`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'X-API-Key': process.env.INTERNAL_API_KEY
+      },
       body: JSON.stringify({ address: walletAddress })
     });
 

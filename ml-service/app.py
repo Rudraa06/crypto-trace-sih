@@ -6,6 +6,10 @@ from neo4j import GraphDatabase
 import networkx as nx
 from models.gnn_detector import predict_otc_risk
 import os
+import torch
+import torch.nn.functional as F
+from torch_geometric.nn import GATv2Conv
+from typing import List
 
 app = FastAPI(title="CryptoTrace ML Microservice", version="1.0.0")
 
@@ -23,8 +27,51 @@ if not NEO4J_PASS:
 if not INTERNAL_API_KEY:
     print("Warning: INTERNAL_API_KEY not set. API calls will be rejected.")
 
+class AdvancedGNN(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, heads=4):
+        super(AdvancedGNN, self).__init__()
+        self.conv1 = GATv2Conv(in_channels, hidden_channels, heads=heads, dropout=0.4)
+        self.conv2 = GATv2Conv(hidden_channels * heads, hidden_channels, heads=heads, dropout=0.4)
+        self.conv3 = GATv2Conv(hidden_channels * heads, out_channels, heads=1, concat=False, dropout=0.4)
+
+    def forward(self, x, edge_index):
+        x = F.elu(self.conv1(x, edge_index))
+        x = F.dropout(x, p=0.4, training=self.training)
+        
+        x2 = F.elu(self.conv2(x, edge_index))
+        x = x + x2 
+        x = F.dropout(x, p=0.4, training=self.training)
+        
+        x = self.conv3(x, edge_index)
+        return x
+
+model = None
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+@app.on_event("startup")
+async def load_model():
+    global model
+    # Load model_advanced.pth from ../ml directory
+    model_path = os.path.join(os.path.dirname(__file__), '..', 'ml', 'model_advanced.pth')
+    
+    if os.path.exists(model_path):
+        model = AdvancedGNN(in_channels=165, hidden_channels=64, out_channels=2, heads=4)
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()
+        print(f"✅ CryptoTrace GATv2 Model successfully loaded on {device}.")
+    else:
+        print(f"⚠️ Model file not found at {model_path}. /predict endpoint will return 503.")
+
 class PredictionRequest(BaseModel):
     address: str = Field(..., pattern=r"^0x[a-fA-F0-9]{40}$", description="Ethereum wallet address")
+
+class GNNPredictionRequest(BaseModel):
+    x: List[List[float]]
+    edge_index: List[List[int]] 
+
+class GNNPredictionResponse(BaseModel):
+    illicit_probabilities: List[float]
 
 def fetch_ego_graph(address: str) -> nx.DiGraph:
     """
@@ -86,6 +133,32 @@ async def predict_otc(req: PredictionRequest, api_key: str = fastapi.Depends(api
     result = predict_otc_risk(req.address, graph)
     
     return result
+
+@app.post("/predict", response_model=GNNPredictionResponse)
+async def predict_nodes(request: GNNPredictionRequest):
+    if not model:
+        raise HTTPException(status_code=503, detail="Model is currently unavailable or still loading.")
+        
+    try:
+        x_tensor = torch.tensor(request.x, dtype=torch.float).to(device)
+        edge_index_tensor = torch.tensor(request.edge_index, dtype=torch.long).to(device)
+        
+        if edge_index_tensor.shape[0] != 2 and edge_index_tensor.numel() > 0:
+            if len(edge_index_tensor.shape) == 2 and edge_index_tensor.shape[1] == 2:
+                edge_index_tensor = edge_index_tensor.t()
+            else:
+                raise ValueError("edge_index must be a 2D array of shape [2, num_edges].")
+        elif edge_index_tensor.numel() == 0:
+            edge_index_tensor = torch.empty((2, 0), dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            logits = model(x_tensor, edge_index_tensor)
+            probabilities = F.softmax(logits, dim=1)
+            illicit_probs = probabilities[:, 0].cpu().tolist()
+            return GNNPredictionResponse(illicit_probabilities=illicit_probs)
+            
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
