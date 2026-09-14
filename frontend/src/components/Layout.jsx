@@ -29,9 +29,6 @@ export default function Layout({ children, viewMode, onToggleView, onOpenCopilot
                 <span className="text-sm sm:text-base font-black tracking-tight text-slate-100">
                   Crypto<span className="gradient-text font-black">Trace</span>
                 </span>
-                <span className="text-[9px] font-mono font-semibold tracking-widest uppercase px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 hidden lg:inline-block">
-                  SIH 2026
-                </span>
               </div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
