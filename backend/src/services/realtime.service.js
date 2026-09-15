@@ -32,10 +32,15 @@ const CHANNEL_NAME = 'cross_case_alerts';
 export function publishCrossCaseAlert(alertData) {
   try {
     const message = JSON.stringify(alertData);
-    publisher.publish(CHANNEL_NAME, message);
-    logger.info('Published cross-case alert to Redis', { channel: CHANNEL_NAME });
+    publisher.publish(CHANNEL_NAME, message).then(() => {
+      logger.info('Published cross-case alert to Redis', { channel: CHANNEL_NAME });
+    }).catch(err => {
+      if (err.message && !err.message.includes('Connection is closed')) {
+        logger.error('Failed to publish alert to Redis', { error: err.message });
+      }
+    });
   } catch (error) {
-    logger.error('Failed to publish alert to Redis', { error: error.message });
+    logger.error('Failed to serialize alert for Redis', { error: error.message });
   }
 }
 
@@ -58,11 +63,13 @@ export function initializeWebSocket(server) {
   });
 
   // Subscribe to Redis
-  subscriber.subscribe(CHANNEL_NAME, (err, count) => {
-    if (err) {
-      logger.error('Failed to subscribe to Redis channel', { channel: CHANNEL_NAME, error: err.message });
+  subscriber.subscribe(CHANNEL_NAME).then((count) => {
+    logger.info('Subscribed to Redis channel', { channel: CHANNEL_NAME, count });
+  }).catch((err) => {
+    if (err.message && err.message.includes('Connection is closed')) {
+      logger.debug('Redis subscription skipped (connection closed)');
     } else {
-      logger.info('Subscribed to Redis channel', { channel: CHANNEL_NAME, count });
+      logger.error('Failed to subscribe to Redis channel', { channel: CHANNEL_NAME, error: err.message });
     }
   });
 

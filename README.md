@@ -82,9 +82,26 @@ VITE_API_URL=http://localhost:4001
 VITE_INTERNAL_API_KEY=local-dev-key-12345
 ```
 
-### 3. Start Neo4j & Seed the Database
+### 3. Start Neo4j & Redis (via Docker or Desktop)
+You can run the required databases using Docker or install them locally.
+
+**Option A: Using Docker (Recommended)**
+Open a new terminal and run these commands to start Neo4j and Redis:
+```bash
+# Start Neo4j
+docker run --name cryptotrace-neo4j -p 7474:7474 -p 7687:7687 -d -e NEO4J_AUTH=neo4j/your_neo4j_password_here neo4j:latest
+
+# Start Redis (for real-time websocket alerts)
+docker run --name cryptotrace-redis -p 6379:6379 -d redis:latest
+```
+*(Make sure to update `your_neo4j_password_here` to match the password in your `backend/.env` file).*
+
+**Option B: Using Desktop Apps**
 1. Open **Neo4j Desktop** and start your local DBMS (ensure the password matches your `backend/.env`).
-2. Before the system can trace funds to an exchange, it needs to know what the exchange addresses are. Run the seeder script from the `backend` folder:
+2. Run a local Redis server if you want real-time alerts.
+
+### 4. Seed the Database
+Before the system can trace funds to an exchange, it needs to know what the exchange addresses are. Run the seeder script from the `backend` folder:
 ```bash
 cd backend
 npm run seed:exchanges

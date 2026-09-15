@@ -52,7 +52,7 @@ import { logger } from '../lib/logger.js';
 const LLM_TIMEOUT_MS = 45_000;
 
 /** Gemini model name used for both endpoints. */
-const MODEL = 'gemini-1.5-flash';
+const MODEL = 'gemini-3.6-flash';
 
 // ---------------------------------------------------------------------------
 // Singleton client
